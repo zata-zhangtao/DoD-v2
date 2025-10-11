@@ -783,6 +783,123 @@ def final_summary_node(state: AnalysisState) -> AnalysisState:
         }
 
 
+def read_excel_info_node(state: AnalysisState) -> AnalysisState:
+    """
+    节点：读取 Excel 文件信息
+
+    Args:
+        state: 当前状态
+
+    Returns:
+        AnalysisState: 更新后的状态
+    """
+    print("=" * 60)
+    print("节点: 读取 Excel 文件信息")
+    print("=" * 60)
+
+    excel_path = state.get("excel_path", "")
+
+    if not excel_path:
+        error_msg = "未提供 Excel 文件路径"
+        print(f"✗ {error_msg}")
+        return {
+            **state,
+            "excel_info": {},
+            "error": error_msg,
+            "messages": state.get("messages", []) + [error_msg]
+        }
+
+    try:
+        # 获取所有 sheet 名称
+        excel_file = pd.ExcelFile(excel_path)
+        sheet_names = excel_file.sheet_names
+
+        # 存储每个 sheet 的详细信息
+        sheets_data = {}
+        total_rows = 0
+
+        # 遍历所有 sheet 并提取详细信息
+        for sheet_name in sheet_names:
+            df = pd.read_excel(excel_path, sheet_name=sheet_name)
+
+            # 获取数值列和分类列
+            numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+            categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+
+            # 基本统计信息（仅数值列）
+            basic_stats = {}
+            if numeric_cols:
+                desc = df[numeric_cols].describe()
+                basic_stats = desc.to_dict()
+
+            # 分类列的值分布（前5个最常见的值）
+            categorical_distributions = {}
+            for col in categorical_cols[:5]:  # 限制最多5个分类列以避免信息过载
+                value_counts = df[col].value_counts().head(5).to_dict()
+                categorical_distributions[col] = value_counts
+
+            # 构建该 sheet 的详细信息
+            sheet_info = {
+                "rows": len(df),
+                "columns": list(df.columns),
+                "dtypes": {col: str(dtype) for col, dtype in df.dtypes.items()},
+                "sample_data": df.head(10).to_dict('records'),  # 增加到10行
+                "summary": {
+                    "null_counts": df.isnull().sum().to_dict(),
+                    "numeric_cols": numeric_cols,
+                    "categorical_cols": categorical_cols,
+                    "basic_stats": basic_stats,
+                    "categorical_distributions": categorical_distributions
+                }
+            }
+
+            sheets_data[sheet_name] = sheet_info
+            total_rows += len(df)
+
+        # 构建完整的 Excel 信息
+        excel_info = {
+            "file_path": excel_path,
+            "total_sheets": len(sheet_names),
+            "sheet_names": sheet_names,
+            "sheets": sheets_data
+        }
+
+        # 打印详细信息
+        print(f"✓ 成功读取 Excel 文件: {excel_path}")
+        print(f"  - Sheet 数量: {len(sheet_names)}")
+        print(f"  - 总行数（所有 sheet）: {total_rows}")
+        print()
+
+        for sheet_name, sheet_data in sheets_data.items():
+            print(f"  📊 Sheet: '{sheet_name}'")
+            print(f"     - 行数: {sheet_data['rows']}")
+            print(f"     - 列数: {len(sheet_data['columns'])}")
+            print(f"     - 列名: {sheet_data['columns']}")
+            print(f"     - 数值列: {sheet_data['summary']['numeric_cols']}")
+            print(f"     - 分类列: {sheet_data['summary']['categorical_cols']}")
+            print()
+
+        return {
+            **state,
+            "excel_info": excel_info,
+            "error": None,
+            "messages": state.get("messages", []) + [
+                f"成功读取 Excel 文件，包含 {len(sheet_names)} 个 sheet，总共 {total_rows} 行数据"
+            ]
+        }
+
+    except Exception as e:
+        error_msg = f"读取 Excel 文件失败: {str(e)}"
+        print(f"✗ {error_msg}")
+
+        return {
+            **state,
+            "excel_info": {},
+            "error": error_msg,
+            "messages": state.get("messages", []) + [error_msg]
+        }
+
+
 def summarize_node(state: AnalysisState) -> AnalysisState:
     """
     节点4：总结分析结果

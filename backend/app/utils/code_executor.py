@@ -37,10 +37,18 @@ def execute_code_safely(code: str, csv_path: str, timeout: int = 30) -> Dict[str
     stdout_buffer = io.StringIO()
     stderr_buffer = io.StringIO()
 
+    # 导入常用库
+    import pandas as pd
+    import numpy as np
+
     # 创建受限的全局命名空间
     safe_globals = {
         "__builtins__": __builtins__,
         "csv_path": csv_path,  # 传递 CSV 路径给代码
+        "pd": pd,              # pandas
+        "pandas": pd,
+        "np": np,              # numpy
+        "numpy": np,
     }
 
     # 创建局部命名空间

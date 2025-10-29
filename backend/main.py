@@ -3,7 +3,7 @@ Main entry file
 Demonstrates how to use the data analysis workflow
 """
 import os
-from backend.app.graphs.code_analysis_graph import run_analysis
+from app.graphs.code_analysis_graph import run_analysis
 
 
 def main():
@@ -11,7 +11,7 @@ def main():
     Main function: Run data analysis workflow
     """
     # CSV file path
-    csv_path = "/code/DoD_v2/backend/data/raw/test_data.csv"
+    csv_path = "./data/raw/test_data.csv"
 
     # Check if file exists
     if not os.path.exists(csv_path):

@@ -17,8 +17,13 @@ import json
 
 # 定义状态
 class AnalysisState(TypedDict):
-    csv_path: str                      # CSV 文件路径
+    # 通用/输入路径
+    csv_path: str                      # CSV 或通用文件路径（Excel 时同样写入此字段）
+    excel_path: str                    # Excel 文件路径（Excel 分支需要）
+
+    # 文件结构信息
     csv_info: dict                     # CSV 基本信息
+    excel_info: dict                   # Excel 基本信息（多 sheet）
     prompt: str                        # 给 LLM 的提示词
     generated_code: str                # LLM 生成的代码
     execution_result: dict             # 代码执行结果
@@ -146,10 +151,50 @@ def plan_analysis_node(state: AnalysisState) -> AnalysisState:
         print(f"✗ 跳过此节点，因为前面出错: {state['error']}")
         return state
 
-    csv_info = state["csv_info"]
+    # 判断是 CSV 还是 Excel
+    csv_info = state.get("csv_info", {})
+    excel_info = state.get("excel_info", {})
 
-    # 构建规划提示词
-    planning_prompt = f"""你是一个数据分析专家。请根据以下 CSV 文件信息，规划一系列深度数据分析任务。
+    is_excel = bool(excel_info)
+
+    # 构建规划提示词（支持 CSV 和 Excel）
+    if is_excel:
+        # Excel 文件规划提示词
+        sheets_description = ""
+        for sheet_name, sheet_data in excel_info["sheets"].items():
+            sheets_description += f"""
+Sheet '{sheet_name}':
+- 行数: {sheet_data['rows']}
+- 列名: {sheet_data['columns']}
+- 数值列: {sheet_data['summary']['numeric_cols']}
+- 分类列: {sheet_data['summary']['categorical_cols']}
+"""
+
+        planning_prompt = f"""你是一个数据分析专家。请根据以下 Excel 文件信息，规划一系列深度数据分析任务。
+
+Excel 文件信息：
+- Sheet 总数: {excel_info['total_sheets']}
+- Sheet 名称: {excel_info['sheet_names']}
+
+{sheets_description}
+
+请规划 3-5 个循序渐进的分析任务，从基础到深入：
+1. 基础统计分析（必须）
+2. 数据分布分析
+3. 相关性分析（如果有多个数值列）
+4. 异常值检测
+5. 分类变量分析（如果有分类列）
+6. 其他有价值的分析
+
+要求：
+- 只输出 JSON 格式的任务列表
+- 每个任务用简短的中文描述（10-20字）
+- 根据数据特征选择合适的分析任务
+- 返回格式: {{"tasks": ["任务1", "任务2", "任务3"]}}
+"""
+    else:
+        # CSV 文件规划提示词
+        planning_prompt = f"""你是一个数据分析专家。请根据以下 CSV 文件信息，规划一系列深度数据分析任务。
 
 CSV 文件信息：
 - 行数: {csv_info['rows']}
@@ -262,7 +307,8 @@ def generate_code_node(state: AnalysisState) -> AnalysisState:
         print(f"✗ 跳过此节点，因为前面出错: {state['error']}")
         return state
 
-    csv_info = state["csv_info"]
+    csv_info = state.get("csv_info", {})
+    excel_info = state.get("excel_info", {})
     analysis_plan = state.get("analysis_plan", [])
     completed_analyses = state.get("completed_analyses", [])
 
@@ -285,10 +331,48 @@ def generate_code_node(state: AnalysisState) -> AnalysisState:
     if completed_analyses:
         previous_analysis_summary = f"\n已完成的分析：{', '.join(completed_analyses)}\n请避免重复，提供新的洞察。\n"
 
-    prompt = f"""你是一个数据分析专家。请根据以下 CSV 文件信息，编写 Python 代码完成特定的分析任务。
+    # 判断是 CSV 还是 Excel
+    is_excel = bool(excel_info)
+
+    # 构建提示词（支持 CSV 和 Excel，且支持多轮分析）
+    if is_excel:
+        # Excel 文件多轮分析提示词
+        sheets_description = ""
+        for sheet_name, sheet_data in excel_info["sheets"].items():
+            sheets_description += f"""
+Sheet: '{sheet_name}'
+- 行数: {sheet_data['rows']}
+- 列名: {sheet_data['columns']}
+- 数值列: {sheet_data['summary']['numeric_cols']}
+- 分类列: {sheet_data['summary']['categorical_cols']}
+"""
+
+        prompt = f"""你是一个数据分析专家。请根据以下 Excel 文件信息，编写 Python 代码完成特定的分析任务。
+
+Excel 文件信息：
+- 文件路径变量: file_path (已在环境中定义)
+- Sheet 总数: {excel_info['total_sheets']}
+- Sheet 名称: {excel_info['sheet_names']}
+
+{sheets_description}
+{previous_analysis_summary}
+本轮分析任务：{current_task}
+
+要求：
+- 只输出可执行的 Python 代码，不要有任何解释说明
+- 针对"{current_task}"这个任务编写专门的分析代码
+- 代码要包含详细的 print 语句来输出分析结果
+- 使用运行环境注入的变量 `file_path` 作为文件路径；不要重新定义或赋值 `file_path`
+- 不要使用任何可视化库（matplotlib、seaborn等）
+- 确保代码可以直接执行
+- 输出要清晰、有结构，便于阅读
+"""
+    else:
+        # CSV 文件多轮分析提示词
+        prompt = f"""你是一个数据分析专家。请根据以下 CSV 文件信息，编写 Python 代码完成特定的分析任务。
 
 CSV 文件信息：
-- 文件路径变量: csv_path (已在环境中定义)
+- 文件路径变量: file_path (已在环境中定义)
 - 行数: {csv_info['rows']}
 - 列名: {csv_info['columns']}
 - 数据类型: {csv_info['dtypes']}
@@ -301,7 +385,7 @@ CSV 文件信息：
 - 只输出可执行的 Python 代码，不要有任何解释说明
 - 针对"{current_task}"这个任务编写专门的分析代码
 - 代码要包含详细的 print 语句来输出分析结果
-- 使用 csv_path 变量作为文件路径
+- 使用运行环境注入的变量 `file_path` 作为文件路径；不要重新定义或赋值 `file_path`
 - 不要使用任何可视化库（matplotlib、seaborn等）
 - 确保代码可以直接执行
 - 输出要清晰、有结构，便于阅读
@@ -373,8 +457,10 @@ def execute_code_node(state: AnalysisState) -> AnalysisState:
         return state
 
     generated_code = state["generated_code"]
-    csv_path = state["csv_path"]
     analysis_plan = state.get("analysis_plan", [])
+
+    # 获取文件路径（CSV 或 Excel）
+    file_path = state.get("excel_path") or state.get("csv_path", "")
 
     if not generated_code:
         error_msg = "没有生成的代码可执行"
@@ -391,7 +477,7 @@ def execute_code_node(state: AnalysisState) -> AnalysisState:
         print("-" * 60)
 
         # 执行代码
-        result = execute_code_safely(generated_code, csv_path)
+        result = execute_code_safely(generated_code, file_path)
 
         if result["success"]:
             print("✓ 代码执行成功")

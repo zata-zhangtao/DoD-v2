@@ -3,12 +3,14 @@
 定义 LangGraph 多轮迭代工作流
 支持 CSV 文件分析和 SQL 数据库查询
 """
+import os
 from langgraph.graph import StateGraph, END
 
 from app.nodes.code_analysis_nodes import (
     AnalysisState,
     read_csv_info_node,
     plan_analysis_node,
+    read_excel_info_node,
     generate_code_node,
     execute_code_node,
     handle_error_node,
@@ -28,12 +30,45 @@ from app.utils.state_manager import load_state
 from app.utils.code_executor import execute_code_safely
 
 
+def determine_file_type(state: AnalysisState) -> str:
+    """
+    根据状态中的路径字段判断应走的读取分支。
+
+    注意：LangGraph 的状态模式基于 `AnalysisState`，其中并未显式声明
+    `excel_path` 字段；某些运行环境会丢弃未在模式里声明的键。
+    因此，这里只依赖一定存在于状态中的 `csv_path` 来做分流：
+    - 当 `csv_path` 为空字符串时，认为是 Excel 文件（`run_analysis` 在传入
+      Excel 路径时会把 `csv_path` 设为空）。
+    - 当 `csv_path` 非空时，再依据扩展名判断（兼容传入 Excel 路径但误放
+      在 `csv_path` 的场景）。
+
+    Returns:
+        str: 下一节点名称（"read_csv_info" 或 "read_excel_info"）
+    """
+    csv_path = state.get("csv_path", "") or ""
+
+    # 运行 run_analysis(excel_path) 时会把 csv_path 置空，用它来判定 Excel
+    if csv_path == "":
+        return "read_excel_info"
+
+    # csv_path 非空：根据扩展名再做一次兜底判断
+    ext = os.path.splitext(csv_path)[1].lower()
+    if ext in [".xlsx", ".xls", ".xlsm", ".xlsb"]:
+        return "read_excel_info"
+    if ext == ".csv":
+        return "read_csv_info"
+
+    # 无法识别扩展名时，默认按 CSV 处理
+    return "read_csv_info"
+
+
 def create_analysis_graph():
     """
-    创建多轮迭代数据分析工作流图（支持错误处理）
+    创建多轮迭代数据分析工作流图（支持CSV和Excel，带错误处理）
 
     工作流：
-    读取CSV → 规划分析 → [生成代码 → 执行代码 → (错误处理) → 更新报告 → 决策继续] (循环) → 最终总结
+    文件类型判断 → 读取文件信息(CSV/Excel) → 规划分析 →
+    [生成代码 → 执行代码 → (错误处理) → 更新报告 → 决策继续] (循环) → 最终总结
 
     Returns:
         编译后的图
@@ -43,6 +78,14 @@ def create_analysis_graph():
 
     # 添加节点
     workflow.add_node("read_csv_info", read_csv_info_node)
+    workflow.add_node("read_excel_info", read_excel_info_node)
+    # 在进入 Excel 分支前，补齐 excel_path（有些运行环境会在入口裁剪未声明字段）
+    def prepare_excel_path_node(state: AnalysisState) -> AnalysisState:
+        # 将已知可用的 csv_path 作为 excel_path 传递给后续 Excel 读取节点
+        excel_path = state.get("csv_path", "")
+        return {**state, "excel_path": excel_path}
+
+    workflow.add_node("prepare_excel_path", prepare_excel_path_node)
     workflow.add_node("plan_analysis", plan_analysis_node)
     workflow.add_node("generate_code", generate_code_node)
     workflow.add_node("execute_code", execute_code_node)
@@ -51,11 +94,23 @@ def create_analysis_graph():
     workflow.add_node("decide_continue", decide_continue_node)
     workflow.add_node("final_summary", final_summary_node)
 
-    # 设置入口点
-    workflow.set_entry_point("read_csv_info")
+    # 设置入口点为条件分支
+    workflow.set_conditional_entry_point(
+        determine_file_type,
+        {
+            # CSV 分支直接读取
+            "read_csv_info": "read_csv_info",
+            # Excel 分支先补齐 excel_path 再读取
+            "read_excel_info": "prepare_excel_path",
+        },
+    )
 
-    # 添加固定边
+    # 添加固定边（定义节点之间的流转）
+    # 两种读取节点都连接到 plan_analysis
     workflow.add_edge("read_csv_info", "plan_analysis")
+    workflow.add_edge("prepare_excel_path", "read_excel_info")
+    workflow.add_edge("read_excel_info", "plan_analysis")
+    # plan_analysis 之后进入多轮分析循环
     workflow.add_edge("plan_analysis", "generate_code")
     workflow.add_edge("generate_code", "execute_code")
 
@@ -140,12 +195,12 @@ def create_analysis_graph():
     return workflow.compile()
 
 
-def run_analysis(csv_path: str):
+def run_analysis(file_path: str):
     """
     运行多轮迭代数据分析工作流
 
     Args:
-        csv_path: CSV 文件路径
+        file_path: 数据文件路径（支持 CSV 或 Excel 格式）
 
     Returns:
         最终状态
@@ -153,10 +208,18 @@ def run_analysis(csv_path: str):
     # 创建图
     app = create_analysis_graph()
 
+    # 根据文件扩展名判断文件类型
+    ext = os.path.splitext(file_path)[1].lower()
+    is_excel = ext in ['.xlsx', '.xls', '.xlsm', '.xlsb']
+
     # 初始化状态
+    # 说明：为避免入口状态被模式裁剪导致丢失 `excel_path`，统一把路径塞到
+    # `csv_path` 中；若是 Excel，路由到 Excel 分支前会有节点把它复制到
+    # `excel_path` 供读取使用。
     initial_state: AnalysisState = {
-        "csv_path": csv_path,
+        "csv_path": file_path,
         "csv_info": {},
+        "excel_info": {},
         "prompt": "",
         "generated_code": "",
         "execution_result": {},
@@ -179,12 +242,13 @@ def run_analysis(csv_path: str):
     print("\n" + "=" * 80)
     print("开始多轮迭代数据分析工作流")
     print("=" * 80)
-    print(f"CSV 文件: {csv_path}")
+    print(f"文件类型: {'Excel' if is_excel else 'CSV'}")
+    print(f"文件路径: {file_path}")
     print("=" * 80)
     print()
 
-    # 运行图
-    result = app.invoke(initial_state)
+    # 运行图（提高递归上限，防止在包含错误重试的多轮流程中触发默认的 25 步限制）
+    result = app.invoke(initial_state, config={"recursion_limit": 200})
 
     print("\n" + "=" * 80)
     print("多轮分析工作流完成")
@@ -277,8 +341,8 @@ def resume_analysis(state_file: str, fixed_code: str = None):
     print("\n正在继续分析...")
     print("=" * 80)
 
-    # 从 decide_continue 节点继续
-    result = app.invoke(saved_state)
+    # 从 decide_continue 节点继续（同样提高递归上限）
+    result = app.invoke(saved_state, config={"recursion_limit": 200})
 
     print("\n" + "=" * 80)
     print("恢复的分析工作流完成")

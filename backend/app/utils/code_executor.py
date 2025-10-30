@@ -6,16 +6,41 @@ import sys
 import io
 import traceback
 from typing import Dict, Any
+import re
 import contextlib
 
 
-def execute_code_safely(code: str, csv_path: str, timeout: int = 30) -> Dict[str, Any]:
+def _sanitize_code(code: str) -> str:
+    """
+    以最小侵入的方式清理 LLM 生成的代码：
+    - 移除对 `file_path` 的重新赋值，确保使用运行环境注入的路径
+    - 将 pd.read_csv/excel('file_path') 形式替换为 pd.read_xxx(file_path)
+    """
+    try:
+        lines = []
+        for line in code.splitlines():
+            # 跳过任何形式的 file_path 赋值
+            if re.match(r"^\s*file_path\s*=\s*.*", line):
+                continue
+            lines.append(line)
+        code = "\n".join(lines)
+
+        # 将读取调用中把 'file_path' 字面量替换为变量 file_path
+        code = re.sub(r"(pd\.read_(?:csv|excel)\s*\(\s*)['\"]file_path['\"]",
+                      r"\1file_path", code)
+        return code
+    except Exception:
+        # 任何异常都不影响执行，返回原始代码
+        return code
+
+
+def execute_code_safely(code: str, file_path: str, timeout: int = 30) -> Dict[str, Any]:
     """
     安全地执行 Python 代码
 
     Args:
         code: 要执行的 Python 代码
-        csv_path: CSV 文件路径
+        file_path: 数据文件路径（CSV 或 Excel）
         timeout: 执行超时时间（秒），默认 30 秒
 
     Returns:
@@ -44,7 +69,7 @@ def execute_code_safely(code: str, csv_path: str, timeout: int = 30) -> Dict[str
     # 创建受限的全局命名空间
     safe_globals = {
         "__builtins__": __builtins__,
-        "csv_path": csv_path,  # 传递 CSV 路径给代码
+        "file_path": file_path,  # 传递文件路径给代码（兼容 CSV 和 Excel）
         "pd": pd,              # pandas
         "pandas": pd,
         "np": np,              # numpy
@@ -57,8 +82,10 @@ def execute_code_safely(code: str, csv_path: str, timeout: int = 30) -> Dict[str
     try:
         # 重定向标准输出和错误输出
         with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
+            # 先做一次简单的代码清理，避免覆盖 file_path
+            sanitized = _sanitize_code(code)
             # 执行代码
-            exec(code, safe_globals, safe_locals)
+            exec(sanitized, safe_globals, safe_locals)
 
         # 执行成功
         result["success"] = True

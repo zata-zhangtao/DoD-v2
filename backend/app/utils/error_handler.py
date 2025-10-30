@@ -30,10 +30,10 @@ def analyze_and_fix_code(
 
 任务描述：{task_description}
 
-CSV 数据信息：
+CSV 数据信息（如适用）：
 - 列名: {csv_info.get('columns', [])}
-- 数据类型: {csv_info.get('dtypes', {{}})}
-- 数值列: {csv_info.get('summary', {{}}).get('numeric_cols', [])}
+- 数据类型: {csv_info.get('dtypes', {})}
+- 数值列: {csv_info.get('summary', {}).get('numeric_cols', [])}
 
 出错的代码：
 ```python
@@ -48,10 +48,11 @@ CSV 数据信息：
 请修复这段代码，注意：
 1. 分析错误原因（如缺少导入、变量未定义、语法错误等）
 2. 修复代码使其可以正常执行
-3. 确保使用 csv_path 变量读取文件
-4. 不要使用可视化库（matplotlib、seaborn等）
-5. 如果需要导入库，代码中已经预定义了 pd（pandas）和 np（numpy）变量，可以直接使用，不需要 import
-6. 只输出修复后的完整代码，不要有任何解释
+3. 确保使用 file_path 变量读取文件（该变量已由运行环境注入）
+4. 不要重新定义或赋值变量 file_path，请直接使用它
+5. 不要使用可视化库（matplotlib、seaborn等）
+6. 如果需要导入库，代码中已经预定义了 pd（pandas）和 np（numpy）变量，可以直接使用，不需要 import
+7. 只输出修复后的完整代码，不要有任何解释
 
 返回 JSON 格式：
 {{
